@@ -26,9 +26,6 @@ func main() {
 
 	p := proxy.New(proxy.Options{
 		Upstreams: upstreams,
-		Client: &http.Client{
-			Timeout: 60 * time.Second,
-		},
 	})
 
 	srv := &http.Server{

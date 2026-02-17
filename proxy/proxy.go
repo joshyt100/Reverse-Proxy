@@ -14,7 +14,7 @@ import (
 
 type Options struct {
 	Upstreams []*url.URL
-	Client    *http.Client
+	Transport *http.Transport
 }
 
 type Proxy struct {
@@ -24,10 +24,25 @@ type Proxy struct {
 }
 
 func New(opts Options) *Proxy {
-	c := opts.Client
-	if c == nil {
-		c = &http.Client{Timeout: 60 * time.Second}
+	tr := opts.Transport
+	if tr == nil {
+		tr = &http.Transport{
+			Proxy:                 http.ProxyFromEnvironment,
+			DialContext:           (&net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+			ForceAttemptHTTP2:     true,
+			MaxIdleConns:          1024,
+			MaxIdleConnsPerHost:   128,
+			IdleConnTimeout:       90 * time.Second,
+			TLSHandshakeTimeout:   5 * time.Second,
+			ExpectContinueTimeout: 1 * time.Second,
+			ResponseHeaderTimeout: 10 * time.Second,
+		}
 	}
+
+	c := &http.Client{
+		Transport: tr,
+	}
+
 	return &Proxy{
 		upstreams: opts.Upstreams,
 		client:    c,
