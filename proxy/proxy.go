@@ -7,20 +7,16 @@ import (
 	"net/http"
 	"net/textproto"
 	"net/url"
+	"reverse-proxy/health"
 	"strings"
-	"sync/atomic"
 	"time"
 )
-
-type Options struct {
-	Upstreams []*url.URL
-	Transport *http.Transport
-}
 
 type Proxy struct {
 	upstreams []*url.URL
 	client    *http.Client
-	rr        uint64
+	balancer  Balancer
+	health    *health.State
 }
 
 func New(opts Options) *Proxy {
@@ -39,14 +35,37 @@ func New(opts Options) *Proxy {
 		}
 	}
 
-	c := &http.Client{
-		Transport: tr,
-	}
+	c := &http.Client{Transport: tr}
 
-	return &Proxy{
+	p := &Proxy{
 		upstreams: opts.Upstreams,
 		client:    c,
 	}
+
+	hs := health.NewState(
+		p.upstreams,
+		tr,
+		opts.HealthPath,
+		opts.HealthInterval,
+		opts.HealthTimeout,
+		opts.PassiveFailCooldown,
+	)
+	p.health = hs
+	p.health.Start()
+
+	algo := opts.Algo
+	if algo == "" {
+		algo = LBLeastConn
+	}
+
+	switch algo {
+	case LBRoundRobin:
+		p.balancer = newRoundRobinBalancer(p.upstreams, p.health)
+	default:
+		p.balancer = newLeastConnBalancer(p.upstreams, p.health)
+	}
+
+	return p
 }
 
 func ParseUpstreams(csv string) ([]*url.URL, error) {
@@ -71,19 +90,28 @@ func ParseUpstreams(csv string) ([]*url.URL, error) {
 }
 
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	up := p.pickUpstream()
+	up, done, ok := p.balancer.Pick(r)
+	if !ok {
+		http.Error(w, "no upstreams available", http.StatusBadGateway)
+		return
+	}
 
 	outReq, err := p.buildUpstreamRequest(r, up)
 	if err != nil {
+		done()
 		http.Error(w, "bad gateway", http.StatusBadGateway)
 		return
 	}
 
 	resp, err := p.client.Do(outReq)
 	if err != nil {
+		p.markUpstreamFailure(up)
+		done()
 		http.Error(w, "bad gateway", http.StatusBadGateway)
 		return
 	}
+
+	resp.Body = &doneReadCloser{rc: resp.Body, done: done}
 	defer resp.Body.Close()
 
 	copyHeaders(w.Header(), resp.Header)
@@ -93,9 +121,16 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	_, _ = io.Copy(w, resp.Body)
 }
 
-func (p *Proxy) pickUpstream() *url.URL {
-	i := int(atomic.AddUint64(&p.rr, 1)-1) % len(p.upstreams)
-	return p.upstreams[i]
+func (p *Proxy) markUpstreamFailure(up *url.URL) {
+	if p.health == nil {
+		return
+	}
+	for i := range p.upstreams {
+		if p.upstreams[i].String() == up.String() {
+			p.health.MarkPassiveFailure(i)
+			return
+		}
+	}
 }
 
 func (p *Proxy) buildUpstreamRequest(in *http.Request, up *url.URL) (*http.Request, error) {
@@ -138,7 +173,6 @@ func removeHopByHopHeaders(h http.Header) {
 			}
 		}
 	}
-
 	h.Del("Connection")
 	h.Del("Proxy-Connection")
 	h.Del("Keep-Alive")
