@@ -34,9 +34,12 @@ func main() {
 	}
 
 	p := proxy.New(proxy.Options{
-		Upstreams: upstreams,
+		Upstreams:           upstreams,
+		HealthPath:          "/health",
+		HealthInterval:      10 * time.Second,
+		HealthTimeout:       2 * time.Second,
+		PassiveFailCooldown: 30 * time.Second,
 	})
-
 	srv := &http.Server{
 		Addr:              cfg.ListenAddr,
 		Handler:           p,
