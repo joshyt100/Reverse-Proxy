@@ -4,19 +4,28 @@ import (
 	"flag"
 	"log"
 	"net/http"
+	"reverse-proxy/config"
 	"reverse-proxy/proxy"
+	"strings"
 	"time"
 )
 
 func main() {
-	var listenAddr string
-	var upstreamsCSV string
-
-	flag.StringVar(&listenAddr, "listen", ":8080", "listen address")
-	flag.StringVar(&upstreamsCSV, "upstreams", "http://localhost:9000", "comma-separated upstream base URLs")
+	cfg, err := config.Load("config.yaml")
+	if err != nil {
+		log.Fatal(err)
+	}
+	// flags
+	listen := flag.String("listen", cfg.ListenAddr, "listen address")
+	upstreamsCSV := flag.String("upstreams", "", "comma-separated upstream URLs (overrides config)")
 	flag.Parse()
 
-	upstreams, err := proxy.ParseUpstreams(upstreamsCSV)
+	cfg.ListenAddr = *listen
+	if *upstreamsCSV != "" {
+		cfg.Upstreams = strings.Split(*upstreamsCSV, ",")
+	}
+
+	upstreams, err := proxy.ParseUpstreams(strings.Join(cfg.Upstreams, ","))
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -29,11 +38,11 @@ func main() {
 	})
 
 	srv := &http.Server{
-		Addr:              listenAddr,
+		Addr:              cfg.ListenAddr,
 		Handler:           p,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
-	log.Printf("listening on %s -> %v", listenAddr, upstreams)
+	log.Printf("listening on %s -> %v", cfg.ListenAddr, upstreams)
 	log.Fatal(srv.ListenAndServe())
 }

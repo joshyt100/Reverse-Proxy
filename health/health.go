@@ -2,6 +2,7 @@ package health
 
 import (
 	"context"
+	"log"
 	"net/http"
 	"net/url"
 	"strings"
@@ -103,6 +104,7 @@ func (s *State) isHealthyAt(i int, now int64) bool {
 func (s *State) checkAllOnce() {
 	for i := range s.ups {
 		ok := s.checkOne(i)
+		// log.Println("health checks")
 		s.healthy[i].Store(ok)
 	}
 }
