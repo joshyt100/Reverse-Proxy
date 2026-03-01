@@ -45,8 +45,10 @@ func NewState(ups []*url.URL, tr http.RoundTripper, healthPath string, interval,
 
 func (s *State) Start() {
 	if s == nil || s.interval <= 0 || s.timeout <= 0 || s.healthPath == "" {
+		log.Printf("[health] not starting: interval=%v timeout=%v path=%q", s.interval, s.timeout, s.healthPath)
 		return
 	}
+	log.Printf("[health] starting checks every %v against path %q", s.interval, s.healthPath)
 	go func() {
 		t := time.NewTicker(s.interval)
 		defer t.Stop()

@@ -6,8 +6,8 @@ import (
 )
 
 type Config struct {
-	ListenAddr string   `yaml:"listenAddr"`
-	Upstreams  []string `yaml:"upstreamsCSV"`
+	ListenAddr string   `yaml:"ListenAddr"`
+	Upstreams  []string `yaml:"Upstreams"`
 }
 
 func Load(path string) (*Config, error) {
