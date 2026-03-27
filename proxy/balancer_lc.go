@@ -38,7 +38,7 @@ func (b *leastConnBalancer) Pick(_ *http.Request) (*url.URL, func(), bool) {
 	minVal := int64(math.MaxInt64)
 	anyHealthy := b.h == nil || b.h.AnyHealthy()
 
-	for k := 0; k < n; k++ {
+	for k := range n {
 		i := (start + k) % n
 		if anyHealthy && b.h != nil && !b.h.IsHealthy(i) {
 			continue
@@ -52,7 +52,7 @@ func (b *leastConnBalancer) Pick(_ *http.Request) (*url.URL, func(), bool) {
 
 	if minIdx == -1 {
 		minVal = int64(math.MaxInt64)
-		for k := 0; k < n; k++ {
+		for k := range n {
 			i := (start + k) % n
 			v := b.active[i].Load()
 			if v < minVal {

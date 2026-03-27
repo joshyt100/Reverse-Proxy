@@ -31,7 +31,7 @@ func (b *roundRobinBalancer) Pick(_ *http.Request) (*url.URL, func(), bool) {
 	start := int(b.rr.Add(1)-1) % n
 	anyHealthy := b.h == nil || b.h.AnyHealthy()
 
-	for k := 0; k < n; k++ {
+	for k := range n {
 		i := (start + k) % n
 		if anyHealthy && b.h != nil && !b.h.IsHealthy(i) {
 			continue

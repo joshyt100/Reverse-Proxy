@@ -1,0 +1,18 @@
+services:
+  proxy:
+    build: .
+    ports:
+      - "8080:8080"
+    depends_on:
+      - upstream1
+      - upstream2
+
+  upstream1:
+    image: nginx
+    ports:
+      - "9000:80"
+
+  upstream2:
+    image: nginx
+    ports:
+      - "9001:80"

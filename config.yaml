@@ -1,0 +1,4 @@
+ListenAddr: ":8080"
+Upstreams:
+  - http://upstream1:80
+  - http://upstream2:80
