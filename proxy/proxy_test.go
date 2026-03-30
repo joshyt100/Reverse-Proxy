@@ -174,7 +174,7 @@ func TestServeHTTP_ForwardsRequestAndResponse(t *testing.T) {
 	p.ServeHTTP(rr, req)
 
 	resp := rr.Result()
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {

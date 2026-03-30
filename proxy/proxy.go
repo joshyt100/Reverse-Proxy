@@ -112,7 +112,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp.Body = &doneReadCloser{rc: resp.Body, done: done}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	copyHeaders(w.Header(), resp.Header)
 	removeHopByHopHeaders(w.Header())
