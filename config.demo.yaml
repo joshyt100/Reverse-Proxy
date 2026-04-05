@@ -5,7 +5,8 @@ cleartext:
 algo: rr
 
 upstreams:
-  - http://127.0.0.1:50051
+  - http://demo-upstream1:80
+  - http://demo-upstream2:80
 
 tls:
   enabled: true

@@ -5,10 +5,11 @@ cleartext:
 algo: rr
 
 upstreams:
-  - http://127.0.0.1:50051
+  - http://localhost:9000
+  - http://localhost:9001
 
 tls:
-  enabled: true
+  enabled: false
   listen_addr: ":8443"
   cert: "certs/cert.pem"
   key: "certs/key.pem"

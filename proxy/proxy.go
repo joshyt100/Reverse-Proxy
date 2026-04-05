@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"crypto/tls"
 	"fmt"
 	"io"
 	"net"
@@ -12,41 +13,49 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	// "golang.org/x/net/http2"
 )
 
 type Proxy struct {
-	upstreams []*url.URL
-	client    *http.Client
-	balancer  Balancer
-	health    *health.State
+	upstreams     []*url.URL
+	http11Client  *http.Client // HTTP/1.1 only — nginx, plain HTTP upstreams
+	h2cClient     *http.Client // h2c — gRPC upstreams
+	balancer      Balancer
+	health        *health.State
+	baseTransport *http.Transport
 }
 
 func New(opts Options) *Proxy {
-	tr := opts.Transport
-	if tr == nil {
-		tr = &http.Transport{
-			Proxy:                 http.ProxyFromEnvironment,
-			DialContext:           (&net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
-			ForceAttemptHTTP2:     true,
-			MaxIdleConns:          1024,
-			MaxIdleConnsPerHost:   128,
-			IdleConnTimeout:       90 * time.Second,
-			TLSHandshakeTimeout:   5 * time.Second,
-			ExpectContinueTimeout: 1 * time.Second,
-			ResponseHeaderTimeout: 10 * time.Second,
-		}
+	http11Transport := &http.Transport{
+		Proxy: http.ProxyFromEnvironment,
+		DialContext: (&net.Dialer{
+			Timeout:   5 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		MaxIdleConns:          1024,
+		MaxIdleConnsPerHost:   128,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   5 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+		ResponseHeaderTimeout: 10 * time.Second,
+		TLSNextProto:          make(map[string]func(string, *tls.Conn) http.RoundTripper),
 	}
 
-	c := &http.Client{Transport: tr}
+	baseTransport := opts.Transport
+	if baseTransport == nil {
+		baseTransport = http11Transport
+	}
 
 	p := &Proxy{
-		upstreams: opts.Upstreams,
-		client:    c,
+		upstreams:     opts.Upstreams,
+		http11Client:  &http.Client{Transport: http11Transport},
+		h2cClient:     &http.Client{Transport: newH2CTransport()},
+		baseTransport: baseTransport,
 	}
 
 	hs := health.NewState(
 		p.upstreams,
-		tr,
+		baseTransport,
 		opts.HealthPath,
 		opts.HealthInterval,
 		opts.HealthTimeout,
@@ -59,7 +68,6 @@ func New(opts Options) *Proxy {
 	if algo == "" {
 		algo = LBLeastConn
 	}
-
 	switch algo {
 	case LBRoundRobin:
 		p.balancer = newRoundRobinBalancer(p.upstreams, p.health)
@@ -73,17 +81,23 @@ func New(opts Options) *Proxy {
 func ParseUpstreams(csv string) ([]*url.URL, error) {
 	parts := strings.Split(csv, ",")
 	out := make([]*url.URL, 0, len(parts))
-	for _, p := range parts {
-		p = strings.TrimSpace(p)
-		if p == "" {
+	for _, raw := range parts {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
 			continue
 		}
-		u, err := url.Parse(p)
+		u, err := url.Parse(raw)
 		if err != nil {
-			return nil, fmt.Errorf("invalid upstream %q: %w", p, err)
+			return nil, fmt.Errorf("invalid upstream %q: %w", raw, err)
 		}
-		if u.Scheme == "" || u.Host == "" {
-			return nil, fmt.Errorf("upstream must include scheme and host, got %q", p)
+		if u.Host == "" {
+			return nil, fmt.Errorf("upstream must include scheme and host, got %q", raw)
+		}
+		switch strings.ToLower(u.Scheme) {
+		case "http", "https":
+			// valid
+		default:
+			return nil, fmt.Errorf("upstream scheme must be http or https, got %q", u.Scheme)
 		}
 		u.Path = strings.TrimRight(u.Path, "/")
 		out = append(out, u)
@@ -102,7 +116,13 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	metrics.ActiveConnections.WithLabelValues(upLabel).Inc()
 	start := time.Now()
 
-	outReq, err := p.buildUpstreamRequest(r, up)
+	// Detect gRPC from the incoming request's Content-Type.
+	// gRPC always sets "application/grpc" (or "application/grpc+proto" etc).
+	// This is the correct signal — not the upstream URL scheme — because
+	// the upstream URL is always a plain http:// address in both dev and prod.
+	grpc := isGRPC(r)
+
+	outReq, err := p.buildUpstreamRequest(r, up, grpc)
 	if err != nil {
 		done()
 		metrics.ActiveConnections.WithLabelValues(upLabel).Dec()
@@ -110,7 +130,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp, err := p.client.Do(outReq)
+	resp, err := p.clientFor(grpc).Do(outReq)
 	if err != nil {
 		p.markUpstreamFailure(up)
 		done()
@@ -121,11 +141,14 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp.Body = &doneReadCloser{rc: resp.Body, done: func() {
-		metrics.ActiveConnections.WithLabelValues(upLabel).Dec()
-		metrics.RequestDuration.WithLabelValues(upLabel).Observe(time.Since(start).Seconds())
-		done()
-	}}
+	resp.Body = &doneReadCloser{
+		rc: resp.Body,
+		done: func() {
+			metrics.ActiveConnections.WithLabelValues(upLabel).Dec()
+			metrics.RequestDuration.WithLabelValues(upLabel).Observe(time.Since(start).Seconds())
+			done()
+		},
+	}
 	defer func() { _ = resp.Body.Close() }()
 
 	metrics.RequestsTotal.WithLabelValues(upLabel, strconv.Itoa(resp.StatusCode)).Inc()
@@ -133,7 +156,42 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	copyHeaders(w.Header(), resp.Header)
 	removeHopByHopHeaders(w.Header())
 	w.WriteHeader(resp.StatusCode)
-	_, _ = io.Copy(w, resp.Body)
+
+	if fl, ok := w.(http.Flusher); ok {
+		fl.Flush()
+	}
+
+	buf := make([]byte, 32*1024)
+	for {
+		n, readErr := resp.Body.Read(buf)
+		if n > 0 {
+			if _, writeErr := w.Write(buf[:n]); writeErr != nil {
+				break
+			}
+			if fl, ok := w.(http.Flusher); ok {
+				fl.Flush()
+			}
+		}
+		if readErr != nil {
+			break
+		}
+	}
+
+	for k, vv := range resp.Trailer {
+		for _, v := range vv {
+			w.Header().Set(http.TrailerPrefix+k, v)
+		}
+	}
+}
+
+// clientFor selects the transport based on whether the request is gRPC.
+// grpc=true  -> h2cClient  (HTTP/2 cleartext, required by gRPC)
+// grpc=false -> http11Client (HTTP/1.1, required by nginx and plain HTTP)
+func (p *Proxy) clientFor(grpc bool) *http.Client {
+	if grpc {
+		return p.h2cClient
+	}
+	return p.http11Client
 }
 
 func (p *Proxy) markUpstreamFailure(up *url.URL) {
@@ -148,15 +206,25 @@ func (p *Proxy) markUpstreamFailure(up *url.URL) {
 	}
 }
 
-func (p *Proxy) buildUpstreamRequest(in *http.Request, up *url.URL) (*http.Request, error) {
+func (p *Proxy) buildUpstreamRequest(in *http.Request, up *url.URL, grpc bool) (*http.Request, error) {
 	target := *up
 	target.Path = joinURLPath(up.Path, in.URL.Path)
 	target.RawQuery = in.URL.RawQuery
 
-	outReq, err := http.NewRequestWithContext(in.Context(), in.Method, target.String(), in.Body)
+	pr, pw := io.Pipe()
+	go func() {
+		_, err := io.Copy(pw, in.Body)
+		pw.CloseWithError(err)
+	}()
+
+	outReq, err := http.NewRequestWithContext(in.Context(), in.Method, target.String(), pr)
 	if err != nil {
+		_ = pr.CloseWithError(err)
 		return nil, err
 	}
+
+	outReq.ContentLength = -1
+	outReq.GetBody = nil
 
 	copyHeaders(outReq.Header, in.Header)
 	removeHopByHopHeaders(outReq.Header)
@@ -166,6 +234,12 @@ func (p *Proxy) buildUpstreamRequest(in *http.Request, up *url.URL) (*http.Reque
 	addXForwardedFor(outReq.Header, in)
 	addXForwardedProto(outReq.Header, in)
 	addXForwardedHost(outReq.Header, in)
+
+	if grpc {
+		outReq.Header.Set("Te", "trailers")
+	} else {
+		preserveOrDropTE(outReq.Header)
+	}
 
 	return outReq, nil
 }
@@ -181,6 +255,7 @@ func copyHeaders(dst, src http.Header) {
 }
 
 func removeHopByHopHeaders(h http.Header) {
+	// RFC 7230 §6.1 — remove headers listed in Connection first.
 	if c := h.Get("Connection"); c != "" {
 		for _, f := range strings.Split(c, ",") {
 			if name := strings.TrimSpace(f); name != "" {
@@ -188,12 +263,12 @@ func removeHopByHopHeaders(h http.Header) {
 			}
 		}
 	}
+
 	h.Del("Connection")
 	h.Del("Proxy-Connection")
 	h.Del("Keep-Alive")
 	h.Del("Proxy-Authenticate")
 	h.Del("Proxy-Authorization")
-	h.Del("TE")
 	h.Del("Trailer")
 	h.Del("Transfer-Encoding")
 	h.Del("Upgrade")
@@ -255,4 +330,11 @@ func cleanPath(p string) string {
 		p = "/" + p
 	}
 	return p
+}
+
+// isGRPC reports whether the incoming request is a gRPC call.
+// The gRPC spec mandates Content-Type starting with "application/grpc"
+// (e.g. "application/grpc", "application/grpc+proto", "application/grpc+json").
+func isGRPC(r *http.Request) bool {
+	return strings.HasPrefix(r.Header.Get("Content-Type"), "application/grpc")
 }
