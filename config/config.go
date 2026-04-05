@@ -6,26 +6,39 @@ import (
 )
 
 type TLSConfig struct {
-	Enabled  bool   `yaml:"enabled"`
-	CertFile string `yaml:"cert"`
-	KeyFile  string `yaml:"key"`
+	Enabled    bool   `yaml:"enabled"`
+	ListenAddr string `yaml:"listen_addr"`
+	CertFile   string `yaml:"cert"`
+	KeyFile    string `yaml:"key"`
+}
+
+type CleartextConfig struct {
+	Enabled    bool   `yaml:"enabled"`
+	ListenAddr string `yaml:"listen_addr"`
 }
 
 type Config struct {
-	ListenAddr string    `yaml:"listen_addr"`
-	Upstreams  []string  `yaml:"upstreams"`
-	Algo       string    `yaml:"algo"`
-	TLS        TLSConfig `yaml:"tls"`
+	Cleartext  CleartextConfig `yaml:"cleartext"`
+	ListenAddr string          `yaml:"listen_addr"`
+	Upstreams  []string        `yaml:"upstreams"`
+	Algo       string          `yaml:"algo"`
+	TLS        TLSConfig       `yaml:"tls"`
 }
 
 func Load(path string) (*Config, error) {
 	cfg := &Config{
-		ListenAddr: ":8080",
+		Cleartext: CleartextConfig{
+			Enabled:    true,
+			ListenAddr: ":8080",
+		},
 		Upstreams: []string{
 			"http://localhost:9000",
 			"http://localhost:9001",
 		},
 		Algo: "lc",
+		TLS: TLSConfig{
+			ListenAddr: ":8443",
+		},
 	}
 
 	data, err := os.ReadFile(path)

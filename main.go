@@ -2,96 +2,94 @@ package main
 
 import (
 	"crypto/tls"
-	"flag"
 	"log"
 	"net/http"
 	"reverse-proxy/config"
 	"reverse-proxy/metrics"
 	"reverse-proxy/proxy"
-	"strings"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"golang.org/x/net/http2"
+	"golang.org/x/net/http2/h2c"
 )
 
 func main() {
-	metrics.Register()
-
 	cfg, err := config.Load("config.yaml")
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalf("config: %v", err)
 	}
 
-	listen := flag.String("listen", cfg.ListenAddr, "listen address")
-	upstreamsCSV := flag.String("upstreams", "", "comma-separated upstream URLs (overrides config)")
-	flag.Parse()
+	metrics.Register()
 
-	cfg.ListenAddr = *listen
-	if *upstreamsCSV != "" {
-		cfg.Upstreams = strings.Split(*upstreamsCSV, ",")
-	}
-
-	if cfg.TLS.Enabled {
-		if cfg.TLS.CertFile == "" || cfg.TLS.KeyFile == "" {
-			log.Fatal("tls.cert and tls.key are required when tls.enabled is true")
-		}
-		if _, err := tls.LoadX509KeyPair(cfg.TLS.CertFile, cfg.TLS.KeyFile); err != nil {
-			log.Fatalf("failed to load TLS cert/key: %v", err)
-		}
-	}
-
-	upstreams, err := proxy.ParseUpstreams(strings.Join(cfg.Upstreams, ","))
+	upstreams, err := proxy.ParseUpstreams(joinUpstreams(cfg.Upstreams))
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalf("upstreams: %v", err)
 	}
-	if len(upstreams) == 0 {
-		log.Fatal("no upstreams provided")
+
+	algo := proxy.LBAlgo(cfg.Algo)
+
+	if !cfg.Cleartext.Enabled && !cfg.TLS.Enabled {
+		log.Fatal("at least one of cleartext or tls must be enabled")
 	}
 
 	p := proxy.New(proxy.Options{
 		Upstreams:           upstreams,
-		Algo:                proxy.LBAlgo(cfg.Algo),
-		HealthPath:          "/health",
-		HealthInterval:      10 * time.Second,
+		Algo:                algo,
+		HealthPath:          "/",
+		HealthInterval:      5 * time.Second,
 		HealthTimeout:       2 * time.Second,
-		PassiveFailCooldown: 30 * time.Second,
+		PassiveFailCooldown: 10 * time.Second,
 	})
 
-	// metrics on separate internal port
-	go func() {
-		mux := http.NewServeMux()
-		mux.Handle("/metrics", promhttp.Handler())
-		log.Println("metrics listening on :9090")
-		log.Fatal(http.ListenAndServe(":9090", mux))
-	}()
+	mux := http.NewServeMux()
+	mux.Handle("/", p)
+	mux.Handle("/metrics", promhttp.Handler())
 
-	srv := &http.Server{
-		Addr:              cfg.ListenAddr,
-		Handler:           p,
-		ReadHeaderTimeout: 10 * time.Second,
+	h2s := &http2.Server{
+		MaxConcurrentStreams: 250,
+	}
+	h2cHandler := h2c.NewHandler(mux, h2s)
+	if cfg.Cleartext.Enabled {
+		clearSrv := &http.Server{
+			Addr:    cfg.Cleartext.ListenAddr,
+			Handler: h2cHandler,
+		}
+
+		if err := http2.ConfigureServer(clearSrv, h2s); err != nil {
+			log.Fatalf("http2.ConfigureServer: %v", err)
+		}
+
+		go func() {
+			log.Printf("proxy listening on %s (h2c + http/1.1)", cfg.Cleartext.ListenAddr)
+			if err := clearSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				log.Fatal(err)
+			}
+		}()
 	}
 
 	if cfg.TLS.Enabled {
-		srv.TLSConfig = &tls.Config{
-			MinVersion: tls.VersionTLS12,
-			CurvePreferences: []tls.CurveID{
-				tls.X25519,
-				tls.CurveP256,
-			},
-
-			CipherSuites: []uint16{
-				tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
-				tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
-				tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
-				tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
-				tls.TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305,
-				tls.TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305,
+		tlsSrv := &http.Server{
+			Addr:    cfg.TLS.ListenAddr,
+			Handler: mux,
+			TLSConfig: &tls.Config{
+				MinVersion: tls.VersionTLS12,
 			},
 		}
-		log.Printf("TLS enabled, listening on %s -> %v", cfg.ListenAddr, upstreams)
-		log.Fatal(srv.ListenAndServeTLS(cfg.TLS.CertFile, cfg.TLS.KeyFile))
+		log.Printf("proxy listening on %s (tls + http/2)", cfg.TLS.ListenAddr)
+		log.Fatal(tlsSrv.ListenAndServeTLS(cfg.TLS.CertFile, cfg.TLS.KeyFile))
 	} else {
-		log.Printf("listening on %s -> %v", cfg.ListenAddr, upstreams)
-		log.Fatal(srv.ListenAndServe())
+		select {}
 	}
+}
+
+func joinUpstreams(us []string) string {
+	result := ""
+	for i, u := range us {
+		if i > 0 {
+			result += ","
+		}
+		result += u
+	}
+	return result
 }
