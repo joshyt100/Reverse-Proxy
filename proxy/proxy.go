@@ -238,7 +238,7 @@ func (p *Proxy) buildUpstreamRequest(in *http.Request, up *url.URL, grpc bool) (
 	if grpc {
 		outReq.Header.Set("Te", "trailers")
 	} else {
-		preserveOrDropTE(outReq.Header)
+		preserveOnlyTrailersTE(outReq.Header)
 	}
 
 	return outReq, nil
