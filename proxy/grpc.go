@@ -9,9 +9,9 @@ import (
 	"golang.org/x/net/http2"
 )
 
-func isH2CUpstream(uScheme string) bool {
-	return strings.EqualFold(uScheme, "h2c")
-}
+// func isH2CUpstream(uScheme string) bool {
+// 	return strings.EqualFold(uScheme, "h2c")
+// }
 
 // newH2CTransport returns an http2.Transport that dials plain TCP.
 // DialTLS is called even for cleartext h2c connections; we simply
