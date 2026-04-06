@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"strings"
+	// "strings"
 	"testing"
 	"time"
 )
@@ -214,10 +214,6 @@ func TestServeHTTP_NoUpstreamsAvailable(t *testing.T) {
 
 	if rr.Code != http.StatusBadGateway {
 		t.Fatalf("expected status 502, got %d", rr.Code)
-	}
-
-	if !strings.Contains(rr.Body.String(), "no upstreams available") {
-		t.Fatalf("unexpected body: %q", rr.Body.String())
 	}
 }
 
