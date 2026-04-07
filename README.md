@@ -115,4 +115,4 @@ go build -o miniproxy .
 
 ## License
 
-MIT
+This project is licensed under the MIT License.
