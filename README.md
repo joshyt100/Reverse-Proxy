@@ -39,8 +39,8 @@ docker compose -f docker-compose.demo.yml up
 |------------|-------------------------------|
 | Proxy      | http://localhost:8080         |
 | Proxy TLS  | https://localhost:8443        |
-| Metrics    | http://localhost:9090/metrics |
-| Prometheus | http://localhost:9091         |
+| Metrics    | http://localhost:2112/metrics |
+| Prometheus | http://localhost:2112         |
 | Grafana    | http://localhost:3001         |
 
 Test HTTP:
