@@ -31,6 +31,11 @@ type RateLimitConfig struct {
 	PerIP bool `yaml:"per_ip"` // true -> per client IP, false -> global
 }
 
+type LoggingConfig struct {
+	Level  string `yaml:"level"`  // debug, info, warn error
+	Format string `yaml:"format"` // json, text
+}
+
 type Config struct {
 	Cleartext  CleartextConfig `yaml:"cleartext"`
 	ListenAddr string          `yaml:"listen_addr"`
@@ -39,6 +44,7 @@ type Config struct {
 	TLS        TLSConfig       `yaml:"tls"`
 	Metrics    MetricsConfig   `yaml:"metrics"`
 	RateLimit  RateLimitConfig `yaml:"rate_limit"`
+	Logger     LoggingConfig   `yaml:"logging"`
 }
 
 func Load(path string) (*Config, error) {
@@ -55,6 +61,7 @@ func Load(path string) (*Config, error) {
 			Enabled:    true,
 			ListenAddr: ":2112",
 		},
+		Logger: LoggingConfig{Level: "info", Format: "json"},
 
 		RateLimit: RateLimitConfig{Enabled: false}, // disable rate limiting for default settings (add note to docs)
 	}

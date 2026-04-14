@@ -4,10 +4,12 @@ import (
 	"crypto/tls"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/textproto"
 	"net/url"
+	"os"
 	"reverse-proxy/health"
 	"reverse-proxy/metrics"
 	"strconv"
@@ -70,6 +72,7 @@ func New(opts Options) *Proxy {
 	if algo == "" {
 		algo = LBLeastConn
 	}
+
 	switch algo {
 	case LBRoundRobin:
 		p.balancer = newRoundRobinBalancer(p.upstreams, p.health)
