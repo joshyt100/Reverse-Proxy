@@ -12,9 +12,28 @@ type TLSConfig struct {
 	KeyFile    string `yaml:"key"`
 }
 
+// add Metrics
+type MetricsConfig struct {
+	Enabled    bool   `yaml:"enabled"`
+	ListenAddr string `yaml:"listen_addr"`
+}
+
 type CleartextConfig struct {
 	Enabled    bool   `yaml:"enabled"`
 	ListenAddr string `yaml:"listen_addr"`
+}
+
+type RateLimitConfig struct {
+	Enabled bool    `yaml:"enabled"`
+	RPS     float64 `yaml:"rps"`   // request per second
+	Burst   int     `yaml:"burst"` // max burst size (burst refers to the max requests a client can make instantly before the rate limiter kicks in)
+
+	PerIP bool `yaml:"per_ip"` // true -> per client IP, false -> global
+}
+
+type LoggingConfig struct {
+	Level  string `yaml:"level"`  // debug, info, warn error
+	Format string `yaml:"format"` // json, text
 }
 
 type Config struct {
@@ -23,6 +42,9 @@ type Config struct {
 	Upstreams  []string        `yaml:"upstreams"`
 	Algo       string          `yaml:"algo"`
 	TLS        TLSConfig       `yaml:"tls"`
+	Metrics    MetricsConfig   `yaml:"metrics"`
+	RateLimit  RateLimitConfig `yaml:"rate_limit"`
+	Logger     LoggingConfig   `yaml:"logging"`
 }
 
 func Load(path string) (*Config, error) {
@@ -31,14 +53,17 @@ func Load(path string) (*Config, error) {
 			Enabled:    true,
 			ListenAddr: ":8080",
 		},
-		Upstreams: []string{
-			"http://localhost:9000",
-			"http://localhost:9001",
-		},
 		Algo: "lc",
 		TLS: TLSConfig{
 			ListenAddr: ":8443",
 		},
+		Metrics: MetricsConfig{
+			Enabled:    true,
+			ListenAddr: ":2112",
+		},
+		Logger: LoggingConfig{Level: "info", Format: "json"},
+
+		RateLimit: RateLimitConfig{Enabled: false}, // disable rate limiting for default settings (add note to docs)
 	}
 
 	data, err := os.ReadFile(path)

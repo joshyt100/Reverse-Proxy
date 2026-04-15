@@ -100,3 +100,50 @@ func TestJoinURLPath(t *testing.T) {
 		t.Fatalf("joinURLPath returned %q, want %q", got, want)
 	}
 }
+
+// verify that if passive failure marked an upstream unhealthy, later successful active check makes it healthy immediately again.
+func TestCheckOne_ClearsPassivePenaltyOnRecovery(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	ups := []*url.URL{mustURL(t, srv.URL)}
+	state := NewState(ups, http.DefaultTransport, "/health", time.Second, time.Second, time.Second)
+
+	state.MarkPassiveFailure(0)
+
+	if state.IsHealthy(0) {
+		t.Fatal("expected upstream to be unhealthy during passive cooldown")
+	}
+
+	if !state.checkOne(0) {
+		t.Fatal("expected active health check to succeed")
+	}
+
+	if !state.IsHealthy(0) {
+		t.Fatal("expected successful active health check to clear passive penalty")
+	}
+}
+
+func TestCheckOne_UsesUpstreamBasePath(t *testing.T) {
+	var gotPath string
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	up := mustURL(t, srv.URL+"/api")
+	ups := []*url.URL{up}
+	state := NewState(ups, http.DefaultTransport, "/health", time.Second, time.Second, time.Second)
+
+	if !state.checkOne(0) {
+		t.Fatal("expected upstream to be healthy")
+	}
+
+	if gotPath != "/api/health" {
+		t.Fatalf("expected request path %q, got %q", "/api/health", gotPath)
+	}
+}

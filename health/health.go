@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"reverse-proxy/metrics"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -105,16 +106,21 @@ func (s *State) isHealthyAt(i int, now int64) bool {
 }
 
 func (s *State) checkAllOnce() {
+	var wg sync.WaitGroup
 	for i := range s.ups {
-		ok := s.checkOne(i)
-		s.healthy[i].Store(ok)
-
-		val := 0.0
-		if ok {
-			val = 1.0
-		}
-		metrics.UpstreamHealthy.WithLabelValues(s.ups[i].Host).Set(val)
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			ok := s.checkOne(i)
+			s.healthy[i].Store(ok)
+			val := 0.0
+			if ok {
+				val = 1.0
+			}
+			metrics.UpstreamHealthy.WithLabelValues(s.ups[i].Host).Set(val)
+		}(i)
 	}
+	wg.Wait()
 }
 
 func (s *State) checkOne(i int) bool {
@@ -122,22 +128,24 @@ func (s *State) checkOne(i int) bool {
 	target := *up
 	target.Path = joinURLPath(up.Path, s.healthPath)
 	target.RawQuery = ""
-
 	ctx, cancel := context.WithTimeout(context.Background(), s.timeout)
 	defer cancel()
-
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target.String(), nil)
 	if err != nil {
 		return false
 	}
-
 	resp, err := s.client.Do(req)
 	if err != nil {
 		return false
 	}
 	defer func() { _ = resp.Body.Close() }()
-
-	return resp.StatusCode >= 200 && resp.StatusCode < 400
+	ok := resp.StatusCode >= 200 && resp.StatusCode < 400
+	if ok {
+		// Clear passive penalty on recovery so the upstream
+		// is eligible immediately after active check passes.
+		s.passiveUntil[i].Store(0)
+	}
+	return ok
 }
 
 func joinURLPath(a, b string) string {

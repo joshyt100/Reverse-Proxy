@@ -4,10 +4,12 @@ import (
 	"crypto/tls"
 	"fmt"
 	"io"
+	// "log/slog"
 	"net"
 	"net/http"
 	"net/textproto"
 	"net/url"
+	// "os"
 	"reverse-proxy/health"
 	"reverse-proxy/metrics"
 	"strconv"
@@ -20,6 +22,7 @@ type Proxy struct {
 	upstreams     []*url.URL
 	http11Client  *http.Client // HTTP/1.1 only — nginx, plain HTTP upstreams
 	h2cClient     *http.Client // h2c — gRPC upstreams
+	h2tlsClient   *http.Client //h2 - gRPC over TLS (https://)
 	balancer      Balancer
 	health        *health.State
 	baseTransport *http.Transport
@@ -50,6 +53,7 @@ func New(opts Options) *Proxy {
 		upstreams:     opts.Upstreams,
 		http11Client:  &http.Client{Transport: http11Transport},
 		h2cClient:     &http.Client{Transport: newH2CTransport()},
+		h2tlsClient:   &http.Client{Transport: newH2cTLSTransport()},
 		baseTransport: baseTransport,
 	}
 
@@ -68,6 +72,7 @@ func New(opts Options) *Proxy {
 	if algo == "" {
 		algo = LBLeastConn
 	}
+
 	switch algo {
 	case LBRoundRobin:
 		p.balancer = newRoundRobinBalancer(p.upstreams, p.health)
@@ -106,92 +111,102 @@ func ParseUpstreams(csv string) ([]*url.URL, error) {
 }
 
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	up, done, ok := p.balancer.Pick(r)
-	if !ok {
-		http.Error(w, "no upstreams available", http.StatusBadGateway)
-		return
-	}
-
-	upLabel := up.Host
-	metrics.ActiveConnections.WithLabelValues(upLabel).Inc()
 	start := time.Now()
-
-	// Detect gRPC from the incoming request's Content-Type.
-	// gRPC always sets "application/grpc" (or "application/grpc+proto" etc).
-	// This is the correct signal — not the upstream URL scheme — because
-	// the upstream URL is always a plain http:// address in both dev and prod.
 	grpc := isGRPC(r)
 
-	outReq, err := p.buildUpstreamRequest(r, up, grpc)
-	if err != nil {
-		done()
-		metrics.ActiveConnections.WithLabelValues(upLabel).Dec()
-		http.Error(w, "bad gateway", http.StatusBadGateway)
-		return
-	}
+	for attempt := 0; attempt < len(p.upstreams); attempt++ {
+		up, done, ok := p.balancer.Pick(r)
+		if !ok {
+			http.Error(w, "no upstreams available", http.StatusBadGateway)
+			return
+		}
 
-	resp, err := p.clientFor(grpc).Do(outReq)
-	if err != nil {
-		p.markUpstreamFailure(up)
-		done()
-		metrics.ActiveConnections.WithLabelValues(upLabel).Dec()
-		metrics.RequestsTotal.WithLabelValues(upLabel, "502").Inc()
-		metrics.RequestDuration.WithLabelValues(upLabel).Observe(time.Since(start).Seconds())
-		http.Error(w, "bad gateway", http.StatusBadGateway)
-		return
-	}
+		upLabel := up.Host
+		metrics.ActiveConnections.WithLabelValues(upLabel).Inc()
 
-	resp.Body = &doneReadCloser{
-		rc: resp.Body,
-		done: func() {
-			metrics.ActiveConnections.WithLabelValues(upLabel).Dec()
-			metrics.RequestDuration.WithLabelValues(upLabel).Observe(time.Since(start).Seconds())
+		outReq, err := p.buildUpstreamRequest(r, up, grpc)
+		if err != nil {
 			done()
-		},
-	}
-	defer func() { _ = resp.Body.Close() }()
+			metrics.ActiveConnections.WithLabelValues(upLabel).Dec()
+			// Non-retryable — bad request construction.
+			http.Error(w, "bad gateway", http.StatusBadGateway)
+			return
+		}
 
-	metrics.RequestsTotal.WithLabelValues(upLabel, strconv.Itoa(resp.StatusCode)).Inc()
+		resp, err := p.clientFor(grpc, up).Do(outReq)
+		if err != nil {
+			p.markUpstreamFailure(up)
+			done()
+			metrics.ActiveConnections.WithLabelValues(upLabel).Dec()
+			metrics.RequestsTotal.WithLabelValues(upLabel, "502").Inc()
+			metrics.RequestDuration.WithLabelValues(upLabel).Observe(time.Since(start).Seconds())
+			// Retryable — try next upstream.
+			continue
+		}
 
-	copyHeaders(w.Header(), resp.Header)
-	removeHopByHopHeaders(w.Header())
-	w.WriteHeader(resp.StatusCode)
+		// Success path.
+		resp.Body = &doneReadCloser{
+			rc: resp.Body,
+			done: func() {
+				metrics.ActiveConnections.WithLabelValues(upLabel).Dec()
+				metrics.RequestDuration.WithLabelValues(upLabel).Observe(time.Since(start).Seconds())
+				done()
+			},
+		}
+		defer func() { _ = resp.Body.Close() }()
 
-	if fl, ok := w.(http.Flusher); ok {
-		fl.Flush()
-	}
+		metrics.RequestsTotal.WithLabelValues(upLabel, strconv.Itoa(resp.StatusCode)).Inc()
 
-	buf := make([]byte, 32*1024)
-	for {
-		n, readErr := resp.Body.Read(buf)
-		if n > 0 {
-			if _, writeErr := w.Write(buf[:n]); writeErr != nil {
+		copyHeaders(w.Header(), resp.Header)
+		removeHopByHopHeaders(w.Header())
+		w.WriteHeader(resp.StatusCode)
+
+		if fl, ok := w.(http.Flusher); ok {
+			fl.Flush()
+		}
+
+		buf := make([]byte, 32*1024)
+		for {
+			n, readErr := resp.Body.Read(buf)
+			if n > 0 {
+				if _, writeErr := w.Write(buf[:n]); writeErr != nil {
+					break
+				}
+				if fl, ok := w.(http.Flusher); ok {
+					fl.Flush()
+				}
+			}
+			if readErr != nil {
 				break
 			}
-			if fl, ok := w.(http.Flusher); ok {
-				fl.Flush()
+		}
+
+		for k, vv := range resp.Trailer {
+			for _, v := range vv {
+				w.Header().Set(http.TrailerPrefix+k, v)
 			}
 		}
-		if readErr != nil {
-			break
-		}
+		return
 	}
 
-	for k, vv := range resp.Trailer {
-		for _, v := range vv {
-			w.Header().Set(http.TrailerPrefix+k, v)
-		}
-	}
+	// All upstreams tried and failed.
+	http.Error(w, "bad gateway", http.StatusBadGateway)
 }
 
-// clientFor selects the transport based on whether the request is gRPC.
-// grpc=true  -> h2cClient  (HTTP/2 cleartext, required by gRPC)
-// grpc=false -> http11Client (HTTP/1.1, required by nginx and plain HTTP)
-func (p *Proxy) clientFor(grpc bool) *http.Client {
-	if grpc {
-		return p.h2cClient
+// clientFor picks the right HTTP client for the upstream.
+//
+//	non-gRPC              → http11Client  (HTTP/1.1, TLSNextProto disabled)
+//	gRPC + http://        → h2cClient     (HTTP/2 cleartext / h2c)
+//	gRPC + https://       → h2tlsClient   (HTTP/2 over TLS, ALPN h2)
+func (p *Proxy) clientFor(grpc bool, up *url.URL) *http.Client {
+	if !grpc {
+		return p.http11Client
 	}
-	return p.http11Client
+
+	if strings.EqualFold(up.Scheme, "https") {
+		return p.h2tlsClient
+	}
+	return p.h2cClient
 }
 
 func (p *Proxy) markUpstreamFailure(up *url.URL) {
@@ -238,7 +253,7 @@ func (p *Proxy) buildUpstreamRequest(in *http.Request, up *url.URL, grpc bool) (
 	if grpc {
 		outReq.Header.Set("Te", "trailers")
 	} else {
-		preserveOrDropTE(outReq.Header)
+		preserveOnlyTrailersTE(outReq.Header)
 	}
 
 	return outReq, nil
