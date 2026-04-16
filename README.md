@@ -1,6 +1,6 @@
 # MiniProxy
 
-A reverse proxy written in Go that handles HTTP/1.1, HTTP/2, and gRPC traffic on the same port.
+A lightweight reverse proxy written in Go that handles HTTP/1.1, HTTP/2, and gRPC traffic on the same port.
 
 ## Features
 
