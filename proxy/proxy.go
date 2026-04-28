@@ -306,8 +306,8 @@ func (p *Proxy) markUpstreamFailure(up *url.URL) {
 // buildUpstreamRequest constructs the outbound *http.Request that will be sent
 // to the chosen upstream. It rewrites the URL, forwards the inbound context
 // (so cancellation propagates), sanitises headers, and sets X-Forwarded-* fields.
-// For gRPC the request body is streamed through a pipe to avoid buffering;
 // regular HTTP requests forward the body reader directly.
+// grpc requests also forward the body reader directly
 func (p *Proxy) buildUpstreamRequest(in *http.Request, up *url.URL, grpc bool) (*http.Request, error) {
 	target := *up
 	target.Path = joinURLPath(up.Path, in.URL.Path)
@@ -316,8 +316,6 @@ func (p *Proxy) buildUpstreamRequest(in *http.Request, up *url.URL, grpc bool) (
 	var body io.Reader
 
 	if grpc {
-		// gRPC needs streaming request-body forwarding.
-		// Do NOT replace this with buffering, or streaming/reflection can hang.
 		// pr, pw := io.Pipe()
 		// go func() {
 		// 	_, err := io.Copy(pw, in.Body)

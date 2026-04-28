@@ -2,8 +2,10 @@ package main
 
 import (
 	"crypto/tls"
+	"fmt"
 	"log/slog"
 	"net/http"
+	_ "net/http/pprof"
 	"os"
 	"reverse-proxy/config"
 	"reverse-proxy/metrics"
@@ -23,7 +25,9 @@ func main() {
 		slog.Error("failed to load config", "path", "config.yaml", "error", err)
 		os.Exit(1)
 	}
-
+	go func() {
+		fmt.Println(http.ListenAndServe("localhost:6060", nil))
+	}()
 	logger := newLogger(cfg)
 	slog.SetDefault(logger)
 
