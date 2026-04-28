@@ -1,5 +1,4 @@
-
-.PHONY: all deps fmt vet lint test build ci
+.PHONY: all deps fmt vet lint test build clean ci
 
 GO := go
 
@@ -27,5 +26,9 @@ test:
 
 build:
 	$(GO) build ./...
+
+clean:
+	$(GO) clean
+	rm -f reverse-proxy
 
 run: deps fmt vet lint test build

@@ -6,6 +6,8 @@ import (
 	"net/http/httptest"
 	"net/url"
 	// "strings"
+	"golang.org/x/net/http2"
+	"golang.org/x/net/http2/h2c"
 	"testing"
 	"time"
 )
@@ -459,6 +461,91 @@ func TestServeHTTP_GRPCOverTLS_UsesH2TLSClient(t *testing.T) {
 		t.Fatalf("expected status 200, got %d", resp.StatusCode)
 	}
 	if string(body) != "grpc-tls-response" {
+		t.Fatalf("unexpected body: %q", string(body))
+	}
+}
+
+func TestNewH2TLSTransport_AllowsSelfSignedHTTP2(t *testing.T) {
+	tr := newH2cTLSTransport()
+
+	if tr.TLSClientConfig == nil {
+		t.Fatal("expected TLSClientConfig to be set")
+	}
+
+	if !tr.TLSClientConfig.InsecureSkipVerify {
+		t.Fatal("expected InsecureSkipVerify=true for local self-signed cert testing")
+	}
+
+	foundH2 := false
+	for _, proto := range tr.TLSClientConfig.NextProtos {
+		if proto == "h2" {
+			foundH2 = true
+			break
+		}
+	}
+
+	if !foundH2 {
+		t.Fatal("expected NextProtos to include h2")
+	}
+}
+
+func TestServeHTTP_GRPCPlaintext_UsesH2CClient(t *testing.T) {
+	upstreamCalled := false
+
+	upstream := httptest.NewServer(h2c.NewHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamCalled = true
+
+		if r.ProtoMajor != 2 {
+			t.Fatalf("expected HTTP/2 upstream request, got %s", r.Proto)
+		}
+
+		if got := r.Header.Get("Content-Type"); got != "application/grpc+proto" {
+			t.Fatalf("expected gRPC content-type, got %q", got)
+		}
+
+		if got := r.Header.Get("Te"); got != "trailers" {
+			t.Fatalf("expected Te=trailers, got %q", got)
+		}
+
+		w.Header().Set("Content-Type", "application/grpc+proto")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("grpc-plaintext-response"))
+	}), &http2.Server{}))
+	defer upstream.Close()
+
+	upURL := mustURL(t, upstream.URL)
+
+	p := New(Options{
+		Upstreams:           []*url.URL{upURL},
+		HealthPath:          "",
+		HealthInterval:      0,
+		HealthTimeout:       0,
+		PassiveFailCooldown: 0,
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "http://proxy.local/svc.Service/Method", nil)
+	req.Host = "proxy.local"
+	req.RemoteAddr = "127.0.0.1:11111"
+	req.Header.Set("Content-Type", "application/grpc+proto")
+	req.Header.Set("TE", "trailers")
+
+	rr := httptest.NewRecorder()
+	p.ServeHTTP(rr, req)
+
+	resp := rr.Result()
+	defer func() { _ = resp.Body.Close() }()
+
+	body, _ := io.ReadAll(resp.Body)
+
+	if !upstreamCalled {
+		t.Fatal("expected upstream to be called")
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", resp.StatusCode)
+	}
+
+	if string(body) != "grpc-plaintext-response" {
 		t.Fatalf("unexpected body: %q", string(body))
 	}
 }
