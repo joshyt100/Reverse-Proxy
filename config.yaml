@@ -8,6 +8,7 @@ upstreams:
   # - http://demo-upstream1:80
   # - http://demo-upstream2:80
   - https://localhost:50051
+  - http://localhost:50052
 
 tls:
   enabled: true
@@ -24,3 +25,6 @@ rate_limit:
   rps: 10
   burst: 5
   per_ip: true
+
+health:
+  enabled: false

@@ -148,6 +148,13 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 		resp, err := p.clientFor(grpc, up).Do(outReq)
 		if err != nil {
+			p.logger.Error("upstream request failed",
+				"upstream", up.String(),
+				"target", outReq.URL.String(),
+				"grpc", grpc,
+				"scheme", up.Scheme,
+				"err", err,
+			)
 			p.markUpstreamFailure(up)
 			done()
 			metrics.ActiveConnections.WithLabelValues(upLabel).Dec()

@@ -28,7 +28,12 @@ func newH2CTransport() *http2.Transport {
 // newH2TLSTransport returns an HTTP/2 transport that uses real TLS + ALPN.
 // Used for gRPC-over-TLS upstreams (https:// scheme)
 func newH2cTLSTransport() *http2.Transport {
-	return &http2.Transport{}
+	return &http2.Transport{
+		TLSClientConfig: &tls.Config{
+			InsecureSkipVerify: true, // local dev only for self-signed certs
+			NextProtos:         []string{"h2"},
+		},
+	}
 }
 
 // preserveOnlyTrailersTE scans all TE header values and retains only "trailers".

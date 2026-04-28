@@ -32,6 +32,7 @@ func main() {
 		"tls_enabled", cfg.TLS.Enabled,
 		"metrics_enabled", cfg.Metrics.Enabled,
 		"rate_limit_enabled", cfg.RateLimit.Enabled,
+		"health_enabled", cfg.Health.Enabled,
 		"algo", cfg.Algo,
 	)
 
@@ -52,13 +53,23 @@ func main() {
 		os.Exit(1)
 	}
 
+	healthPath := ""
+	healthInterval := time.Duration(0)
+	healthTimeout := time.Duration(0)
+
+	if cfg.Health.Enabled {
+		healthPath = cfg.Health.Path
+		healthInterval = time.Duration(cfg.Health.IntervalSeconds) * time.Second
+		healthTimeout = time.Duration(cfg.Health.TimeoutSeconds) * time.Second
+	}
+
 	p := proxy.New(proxy.Options{
 		Upstreams:           upstreams,
 		Algo:                algo,
-		HealthPath:          "/",
-		HealthInterval:      5 * time.Second,
-		HealthTimeout:       2 * time.Second,
-		PassiveFailCooldown: 10 * time.Second,
+		HealthPath:          healthPath,
+		HealthInterval:      healthInterval,
+		HealthTimeout:       healthTimeout,
+		PassiveFailCooldown: time.Duration(cfg.Health.PassiveCooldownSecs) * time.Second,
 		Logger:              logger,
 	})
 

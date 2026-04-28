@@ -1,8 +1,9 @@
 package config
 
 import (
-	"go.yaml.in/yaml/v4"
 	"os"
+
+	"go.yaml.in/yaml/v4"
 )
 
 type TLSConfig struct {
@@ -26,7 +27,7 @@ type CleartextConfig struct {
 type RateLimitConfig struct {
 	Enabled bool    `yaml:"enabled"`
 	RPS     float64 `yaml:"rps"`   // request per second
-	Burst   int     `yaml:"burst"` // max burst size (burst refers to the max requests a client can make instantly before the rate limiter kicks in)
+	Burst   int     `yaml:"burst"` // max burst size
 
 	PerIP bool `yaml:"per_ip"` // true -> per client IP, false -> global
 }
@@ -34,6 +35,14 @@ type RateLimitConfig struct {
 type LoggingConfig struct {
 	Level  string `yaml:"level"`  // debug, info, warn error
 	Format string `yaml:"format"` // json, text
+}
+
+type HealthConfig struct {
+	Enabled             bool   `yaml:"enabled"`
+	Path                string `yaml:"path"`
+	IntervalSeconds     int    `yaml:"interval_seconds"`
+	TimeoutSeconds      int    `yaml:"timeout_seconds"`
+	PassiveCooldownSecs int    `yaml:"passive_cooldown_seconds"`
 }
 
 type Config struct {
@@ -45,6 +54,7 @@ type Config struct {
 	Metrics    MetricsConfig   `yaml:"metrics"`
 	RateLimit  RateLimitConfig `yaml:"rate_limit"`
 	Logger     LoggingConfig   `yaml:"logging"`
+	Health     HealthConfig    `yaml:"health"`
 }
 
 func Load(path string) (*Config, error) {
@@ -63,7 +73,15 @@ func Load(path string) (*Config, error) {
 		},
 		Logger: LoggingConfig{Level: "info", Format: "text"},
 
-		RateLimit: RateLimitConfig{Enabled: false}, // disable rate limiting for default settings (add note to docs)
+		RateLimit: RateLimitConfig{Enabled: false},
+
+		Health: HealthConfig{
+			Enabled:             false,
+			Path:                "/",
+			IntervalSeconds:     5,
+			TimeoutSeconds:      2,
+			PassiveCooldownSecs: 10,
+		},
 	}
 
 	data, err := os.ReadFile(path)
