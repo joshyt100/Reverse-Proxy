@@ -17,6 +17,7 @@ import (
 	"time"
 )
 
+// bufPool provides reusable buffers for response copying to reduce allocations
 var bufPool = sync.Pool{
 	New: func() any {
 		b := make([]byte, 32*1024)
@@ -24,6 +25,8 @@ var bufPool = sync.Pool{
 	},
 }
 
+// hopByHopHeaders are headers that must not be forwarded between proxy hops
+// per HTTP spec (they are connection-specific, not end-to-end)
 var hopByHopHeaders = map[string]struct{}{
 	"Connection":          {},
 	"Proxy-Connection":    {},
@@ -35,6 +38,8 @@ var hopByHopHeaders = map[string]struct{}{
 	"Upgrade":             {},
 }
 
+// Proxy is the core reverse proxy that handles request routing,
+// load balancing, health checking, and transport selection
 type Proxy struct {
 	upstreams      []*url.URL
 	upstreamIndex  map[string]int
