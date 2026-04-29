@@ -59,19 +59,25 @@ grpcurl -plaintext -d '{"message":"hello"}' localhost:8080 echo.EchoService/Echo
 cleartext:
   enabled: true
   listen_addr: ":8080"
-
+algo: rr
+upstreams:
+  - https://localhost:50051
+  - http://localhost:50052
 tls:
   enabled: true
   listen_addr: ":8443"
   cert: "certs/cert.pem"
   key: "certs/key.pem"
-
-algo: rr  # rr (round-robin) or lc (least-connections)
-
-upstreams:
-  - http://service-a:80
-  - http://service-b:80
-  - http://grpc-service:50051
+metrics:
+  enabled: true
+  listen_addr: ":2112"
+rate_limit:
+  enabled: false
+  rps: 10
+  burst: 5
+  per_ip: true
+health:
+  enabled: false
 ```
 
 ### Options
@@ -81,11 +87,18 @@ upstreams:
 | `cleartext.enabled` | Enable HTTP/h2c listener | `true` |
 | `cleartext.listen_addr` | Address to listen on | `:8080` |
 | `tls.enabled` | Enable HTTPS/HTTP2 listener | `false` |
-| `tls.listen_addr` | TLS address | `:8443` |
+| `tls.listen_addr` | TLS address to listen on | `:8443` |
 | `tls.cert` | Path to TLS certificate | |
 | `tls.key` | Path to TLS private key | |
 | `algo` | Load balancing algorithm (`rr` or `lc`) | `lc` |
 | `upstreams` | List of upstream URLs | |
+| `metrics.enabled` | Enable Prometheus metrics endpoint | `false` |
+| `metrics.listen_addr` | Address to expose metrics on | `:2112` |
+| `rate_limit.enabled` | Enable rate limiting | `false` |
+| `rate_limit.rps` | Requests per second allowed | `10` |
+| `rate_limit.burst` | Burst size above RPS limit | `5` |
+| `rate_limit.per_ip` | Apply rate limit per IP address | `true` |
+| `health.enabled` | Enable health check endpoint | `false` |
 
 ## Health checking
 
